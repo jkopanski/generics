@@ -13,26 +13,26 @@ open import Data.Bool.Base
 open import Data.Maybe.Base using (Maybe; just; nothing; maybe)
 open import Agda.Builtin.Reflection renaming ( primQNameEquality to _Name≈_
                                              )
-open import Reflection.Abstraction using (unAbs)
-open import Reflection.Argument    using (_⟨∷⟩_; _⟅∷⟆_)
-open import Reflection.Term hiding (Telescope; var)
+open import Reflection.AST.Abstraction using (unAbs)
+open import Reflection.AST.Argument    using (_⟨∷⟩_; _⟅∷⟆_)
+open import Reflection.AST.Term hiding (Telescope; var)
 open import Relation.Nullary using (yes; no)
 
-open import Category.Monad   as Monad
+open import Effect.Monad   as Monad
 
-import Data.List.Categorical as List
+import Data.List.Effectful as List
 import Data.Nat.Induction    as Nat
 import Data.Char             as C
 
-open import Reflection.TypeChecking.Monad.Instances using (tcMonad)
-open import Reflection.Traversal hiding (_,_)
+open import Reflection.TCM.Instances using (tcMonad)
+open import Reflection.AST.Traversal hiding (_,_)
 
 open import Generics.Prelude
 open import Generics.Telescope
 open import Generics.Desc renaming (_,_ to _,ω_)
 import Generics.Accessibility as Accessibility
 open import Generics.HasDesc
-import Function.Identity.Categorical as Identity
+import Function.Identity.Effectful as Identity
 
 open List.TraversableM ⦃...⦄
 open Monad.RawMonad    ⦃...⦄
@@ -54,7 +54,7 @@ liftN (suc n) f zero    = zero
 liftN (suc n) f (suc k) = suc (liftN n f k)
 
 mapVars : (ℕ → ℕ) → Term → Term
-mapVars f = traverseTerm Identity.applicative actions (0 Reflection.Traversal., [])
+mapVars f = traverseTerm Identity.applicative actions (0 Reflection.AST.Traversal., [])
   where
     actions : Actions Identity.applicative
     actions .onVar  ctx = liftN (ctx .Cxt.len) f
@@ -214,7 +214,7 @@ private
 getIndexTel : List Term → ℕ → Type → TC Term
 getIndexTel fargs nP ty = aux ty 0 (con (quote ε) [])
   where aux : Type → ℕ → Term → TC Term
-        aux (agda-sort s) n I = return I
+        aux (agda-sort s) n I = returnTC I
         aux (Π[ s ∶ arg i a ] b) n I = do
           i′ ← quoteTC i >>= normalise
           aux b (suc n) (con (quote _⊢<_>_)
@@ -264,25 +264,25 @@ module _ (fargs : List Term) (dt : Name) (nP : ℕ) where
   getRecDesc : ℕ → Type → TC (Maybe (Term × Skel))
   getRecDesc n (def nm args) = do
     if nm Name≈ dt
-      then return (just (con (quote ConDesc.var) (toIndex n args ⟨∷⟩ []) , Cκ))
-      else return nothing
+      then returnTC (just (con (quote ConDesc.var) (toIndex n args ⟨∷⟩ []) , Cκ))
+      else returnTC nothing
   getRecDesc n (Π[ s ∶ arg i a ] b) = do
     getRecDesc (suc n) b >>= λ where
       (just (right , skright)) → do
         i′ ← quoteTC i >>= normalise
-        return $ just ( con (quote ConDesc.π) (con (quote Product._,_) (lit (string s) ⟨∷⟩ i′ ⟨∷⟩ [])
-                                          ⟨∷⟩ vLam "PV" (telescopize fargs nP n 0 a) ⟨∷⟩ right ⟨∷⟩ [])
-                      , Cπ i skright
-                      )
-      nothing  → return nothing
-  getRecDesc n ty = return nothing
+        returnTC $ just ( con (quote ConDesc.π) (con (quote Product._,_) (lit (string s) ⟨∷⟩ i′ ⟨∷⟩ [])
+                                            ⟨∷⟩ vLam "PV" (telescopize fargs nP n 0 a) ⟨∷⟩ right ⟨∷⟩ [])
+                        , Cπ i skright
+                        )
+      nothing  → returnTC nothing
+  getRecDesc n ty = returnTC nothing
 
   getDesc : (ℕ → ℕ) → ℕ → Type → TC (Term × Skel)
   getDesc f n (def nm args) =
     -- we're gonna assume nm == dt
     -- TODO: why does this work???
     --       surely args contain parameters
-    return (con (quote ConDesc.var) (toIndex n (List.map (Arg.map (mapVars f)) args) ⟨∷⟩ []) , Cκ)
+    returnTC (con (quote ConDesc.var) (toIndex n (List.map (Arg.map (mapVars f)) args) ⟨∷⟩ []) , Cκ)
   getDesc f n (Π[ s ∶ arg i a ] b) =
     getRecDesc n (mapVars f a) >>= λ where
       -- (possibly higher order) inductive argument
@@ -291,17 +291,17 @@ module _ (fargs : List Term) (dt : Name) (nP : ℕ) where
         -- note: inductive arguments are relevant (for now)
         -- /!\ inductive arguments to not bind a variable, so we strengthen the term
         (right , skright) ← getDesc ((_- 1) ∘ f) n b
-        return (con (quote ConDesc._⊗_) (left ⟨∷⟩ right ⟨∷⟩ []) , (skleft C⊗ skright))
+        returnTC (con (quote ConDesc._⊗_) (left ⟨∷⟩ right ⟨∷⟩ []) , (skleft C⊗ skright))
       -- plain old argument
       nothing → do
         (right , skright) ← getDesc (liftN 1 f) (suc n) b
         i′    ← quoteTC i >>= normalise
-        return ( con (quote ConDesc.π) (con (quote Product._,_) (lit (string s) ⟨∷⟩ i′ ⟨∷⟩ [])
-                                    ⟨∷⟩ vLam "PV" (telescopize fargs nP n 0 a)
-                                    ⟨∷⟩ right
-                                    ⟨∷⟩ [])
-               , Cπ i skright
-               )
+        returnTC ( con (quote ConDesc.π) (con (quote Product._,_) (lit (string s) ⟨∷⟩ i′ ⟨∷⟩ [])
+                                      ⟨∷⟩ vLam "PV" (telescopize fargs nP n 0 a)
+                                      ⟨∷⟩ right
+                                      ⟨∷⟩ [])
+                 , Cπ i skright
+                 )
   getDesc _ _ _ = typeError [ strErr "ill-formed constructor type" ]
 
 
@@ -461,7 +461,7 @@ macro
   deriveDesc t hole = do
     -- Arguments are used for enabling universe-polymorphic defintions
     -- these arguments should be prepended to every use of nm as a type
-    def nm gargs ← return t
+    def nm gargs ← returnTC t
       where _ → typeError [ strErr "Expected name with arguments." ]
 
     let fargs = reverse (List.map Arg.unArg gargs)
@@ -485,7 +485,7 @@ macro
       -- get the type of current constructor, with explicit arguments and parameters stripped
       conTyp ← getType cn >>= normalise <&> dropPis nP
       (desc , skel) ← getDesc fargs nm (nP - nArgs) id 0 conTyp
-      return $ (cn , skel) , desc
+      returnTC $ (cn , skel) , desc
 
     let descs = List.map proj₂ descs&skels
     let skels = List.map proj₁ descs&skels
