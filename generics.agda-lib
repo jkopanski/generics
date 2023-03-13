@@ -1,4 +1,4 @@
 name: generics
-include: src
+include: . src
 depend:
   standard-library
